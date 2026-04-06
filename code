@@ -1,1 +1,393 @@
+"""
+╔══════════════════════════════════════════════════════════════╗
+║         SUPPORTBOT — Terminal-Based Rule Chatbot             ║
+║         Keyword Detection · Memory · Multi-flow              ║
+╚══════════════════════════════════════════════════════════════╝
+"""
 
+import random
+import time
+import re
+import sys
+from datetime import datetime
+
+# ─── ANSI COLORS ──────────────────────────────────────────────────────────────
+
+class Color:
+    RESET   = "\033[0m"
+    BOLD    = "\033[1m"
+    CYAN    = "\033[96m"
+    GREEN   = "\033[92m"
+    YELLOW  = "\033[93m"
+    RED     = "\033[91m"
+    MAGENTA = "\033[95m"
+    BLUE    = "\033[94m"
+    WHITE   = "\033[97m"
+    GREY    = "\033[90m"
+
+def bot(msg):
+    """Print a bot message with typing effect."""
+    prefix = f"{Color.CYAN}{Color.BOLD}  SupportBot ›{Color.RESET} "
+    print(prefix, end="", flush=True)
+    for ch in msg:
+        print(ch, end="", flush=True)
+        time.sleep(0.018)
+    print()
+
+def user_prompt():
+    """Styled input prompt."""
+    return input(f"\n{Color.GREEN}{Color.BOLD}  You › {Color.RESET}").strip()
+
+def divider():
+    print(f"{Color.GREY}  {'─' * 52}{Color.RESET}")
+
+def info(msg):
+    print(f"{Color.GREY}  {msg}{Color.RESET}")
+
+
+# ─── BOT MEMORY (session state) ───────────────────────────────────────────────
+
+memory = {
+    "name":          None,      # user's name
+    "order_id":      None,      # last mentioned order
+    "topic":         None,      # active conversation topic
+    "turn":          0,         # total turns
+    "greeted":       False,     # has bot greeted user?
+    "asked_name":    False,     # has bot asked for name?
+    "history":       [],        # list of (user, bot) pairs
+}
+
+
+# ─── RESPONSE BANKS ───────────────────────────────────────────────────────────
+
+GREETINGS = [
+    "Hey there! Welcome to SupportBot. How can I help you today?",
+    "Hello! Great to see you. What can I do for you?",
+    "Hi! I'm SupportBot, your virtual support assistant. What's up?",
+]
+
+FAREWELLS = [
+    "Goodbye{name}! Have a wonderful day. 👋",
+    "See you later{name}! Feel free to come back anytime.",
+    "Take care{name}! Hope I was helpful today. 😊",
+]
+
+THANKS = [
+    "You're very welcome{name}! Happy to help.",
+    "Glad I could assist{name}!",
+    "Anytime{name}! That's what I'm here for. 😊",
+]
+
+FALLBACKS = [
+    "Hmm, I'm not quite sure about that. Could you rephrase?",
+    "I didn't quite catch that. Try asking about orders, refunds, password, or hours.",
+    "That's outside my knowledge{name}. Type 'help' to see what I can do.",
+    "I'm still learning! Could you try a different question?",
+]
+
+CONFUSED = [
+    "I've seen a few messages I couldn't understand. Type 'help' for a menu.",
+]
+
+
+# ─── KEYWORD RULES ────────────────────────────────────────────────────────────
+# Each rule: (list_of_keywords, handler_function)
+# Rules are checked in order — first match wins.
+
+def _name_sub(template):
+    n = f", {memory['name']}" if memory['name'] else ""
+    return template.replace("{name}", n)
+
+def handle_greeting(text):
+    memory["greeted"] = True
+    if memory["name"]:
+        return f"Hey {memory['name']}! Good to hear from you again. What can I help you with?"
+    reply = random.choice(GREETINGS)
+    return reply
+
+def handle_farewell(text):
+    return _name_sub(random.choice(FAREWELLS))
+
+def handle_thanks(text):
+    return _name_sub(random.choice(THANKS))
+
+def handle_help(text):
+    return (
+        "Here's what I can help you with:\n\n"
+        "  📦  order      — Track or check your order\n"
+        "  💳  refund     — Request a refund or return\n"
+        "  🔑  password   — Reset your account password\n"
+        "  🕐  hours      — Our business hours\n"
+        "  📞  contact    — How to reach a human agent\n"
+        "  🙋  my name    — Tell me your name\n"
+        "  👋  bye        — End the conversation\n\n"
+        "Just type naturally — I'll pick up keywords!"
+    )
+
+def handle_order(text):
+    # Try to extract an order number from the message
+    match = re.search(r'\b([A-Z]{0,3}\d{4,10})\b', text.upper())
+    if match:
+        memory["order_id"] = match.group(1)
+        return (
+            f"I found order #{memory['order_id']} in your message. "
+            "Typically, orders take 3–5 business days to arrive. "
+            "You should have received a tracking email — check your spam folder if not. "
+            "Would you like to raise a concern about this order?"
+        )
+    memory["topic"] = "order"
+    return (
+        "I'd be happy to help with your order! "
+        "Could you share your order number? (e.g. ORD12345) "
+        "You'll find it in your confirmation email."
+    )
+
+def handle_refund(text):
+    memory["topic"] = "refund"
+    return (
+        "Sorry to hear you need a refund! Here's the process:\n\n"
+        "  1. Ensure your item is within the 30-day return window.\n"
+        "  2. Email returns@support.com with your order number.\n"
+        "  3. We'll process your refund within 5–7 business days.\n\n"
+        "Do you have your order number handy?"
+    )
+
+def handle_password(text):
+    memory["topic"] = "password"
+    return (
+        "No worries — password resets are easy! Follow these steps:\n\n"
+        "  1. Go to the login page and click 'Forgot Password'.\n"
+        "  2. Enter the email linked to your account.\n"
+        "  3. Check your inbox for a reset link (valid for 15 minutes).\n\n"
+        "Didn't receive the email? Check spam, or type 'contact' to reach an agent."
+    )
+
+def handle_hours(text):
+    now = datetime.now()
+    day = now.strftime("%A")
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+
+    if weekday < 5 and 9 <= hour < 18:
+        status = "✅ We're currently OPEN!"
+    elif weekday == 5:
+        status = "🕐 Today is Saturday — reduced hours (10 AM – 2 PM)."
+    elif weekday == 6:
+        status = "❌ Today is Sunday — we're closed."
+    else:
+        status = "❌ We're currently CLOSED."
+
+    return (
+        f"Our business hours are:\n\n"
+        f"  Mon – Fri : 9:00 AM – 6:00 PM\n"
+        f"  Saturday  : 10:00 AM – 2:00 PM\n"
+        f"  Sunday    : Closed\n\n"
+        f"  Today is {day}. {status}"
+    )
+
+def handle_contact(text):
+    return (
+        "Here's how to reach our team:\n\n"
+        "  📧  Email   : support@company.com\n"
+        "  📞  Phone   : +1-800-555-0199 (Mon–Fri, 9–6 PM)\n"
+        "  💬  Live Chat: Available on our website\n"
+        "  🐦  Twitter : @CompanySupport\n\n"
+        "Average response time: under 2 hours during business hours."
+    )
+
+def handle_name(text):
+    # Try to extract name after "I am", "I'm", "my name is", "call me"
+    patterns = [
+        r"(?:i'?m|i am|my name is|call me|they call me)\s+([A-Za-z]+)",
+        r"name(?:'s| is)\s+([A-Za-z]+)",
+    ]
+    for pat in patterns:
+        match = re.search(pat, text, re.IGNORECASE)
+        if match:
+            memory["name"] = match.group(1).capitalize()
+            return f"Nice to meet you, {memory['name']}! I'll remember that. How can I help you today?"
+
+    # Couldn't extract — ask directly
+    memory["topic"] = "asking_name"
+    return "I'd love to know your name! What should I call you?"
+
+def handle_who(text):
+    return (
+        "I'm SupportBot 🤖 — a virtual customer support assistant.\n"
+        "I can help you with orders, refunds, passwords, and more.\n"
+        "I'm not human, but I'll do my best to help! Type 'help' for options."
+    )
+
+def handle_status(text):
+    if memory["order_id"]:
+        return (
+            f"Your order #{memory['order_id']} is currently being processed. "
+            "Expected delivery: 3–5 business days from the order date. "
+            "You can track it using the link in your confirmation email."
+        )
+    return "I'd need your order number to check the status. Could you share it?"
+
+def handle_complaint(text):
+    return (
+        "I'm really sorry to hear you're having a bad experience. 😔\n"
+        "Your feedback matters to us. Here's what I'd suggest:\n\n"
+        "  1. Tell me more — what went wrong?\n"
+        "  2. Or type 'contact' to speak with a human agent directly.\n\n"
+        "We want to make this right for you."
+    )
+
+def handle_yes(text):
+    topic = memory.get("topic")
+    if topic == "order":
+        return "Great! Please share your order number and I'll look into it."
+    elif topic == "refund":
+        return "Please email returns@support.com with your order number and reason for return."
+    elif topic == "asking_name":
+        return "Go ahead — what's your name?"
+    return "Sure! What would you like to know more about?"
+
+def handle_no(text):
+    memory["topic"] = None
+    return _name_sub("No problem{name}! Is there anything else I can help you with?")
+
+def handle_fallback(text):
+    consecutive_fallbacks = sum(
+        1 for u, b in reversed(memory["history"][-4:])
+        if "didn't quite catch" in b or "not quite sure" in b or "outside my knowledge" in b
+    )
+    if consecutive_fallbacks >= 2:
+        return (
+            "Seems like I'm having trouble understanding. "
+            "Type 'help' to see all topics, or 'contact' to reach a human agent."
+        )
+    return _name_sub(random.choice(FALLBACKS))
+
+
+# ─── RULE TABLE ───────────────────────────────────────────────────────────────
+
+RULES = [
+    # keywords (any match triggers handler)
+    (["hello", "hi", "hey", "howdy", "good morning", "good evening", "good afternoon", "sup", "hiya"], handle_greeting),
+    (["bye", "goodbye", "see you", "see ya", "quit", "exit", "cya", "later", "farewell"],              handle_farewell),
+    (["thank", "thanks", "thx", "ty", "appreciate", "grateful"],                                        handle_thanks),
+    (["help", "menu", "options", "what can you do", "commands"],                                         handle_help),
+    (["order", "track", "package", "delivery", "shipment", "shipping", "parcel"],                       handle_order),
+    (["refund", "return", "money back", "cancel", "cancellation", "exchange", "replace"],                handle_refund),
+    (["password", "reset", "forgot", "login", "sign in", "account", "locked out"],                      handle_password),
+    (["hours", "open", "close", "timing", "schedule", "working hours", "office hours"],                  handle_hours),
+    (["contact", "human", "agent", "speak to", "talk to", "phone", "email", "live chat"],               handle_contact),
+    (["my name", "i am", "i'm", "call me", "name is"],                                                  handle_name),
+    (["who are you", "what are you", "are you a bot", "are you human", "are you real"],                 handle_who),
+    (["status", "where is", "update", "progress"],                                                       handle_status),
+    (["complaint", "unhappy", "angry", "frustrated", "terrible", "awful", "worst", "disappointed"],     handle_complaint),
+    (["yes", "yeah", "yep", "sure", "absolutely", "of course", "yup"],                                  handle_yes),
+    (["no", "nope", "nah", "not really", "never mind", "nevermind"],                                    handle_no),
+]
+
+
+# ─── MATCHING ENGINE ──────────────────────────────────────────────────────────
+
+def match_rule(text: str):
+    """Return handler for first matching rule, or fallback."""
+    lower = text.lower()
+    for keywords, handler in RULES:
+        if any(kw in lower for kw in keywords):
+            return handler
+    return handle_fallback
+
+
+# ─── SPECIAL FLOWS ────────────────────────────────────────────────────────────
+
+def check_name_capture(text: str) -> str | None:
+    """
+    If the bot just asked for the user's name and the user replies with
+    a single word (or short phrase), treat it as the name.
+    """
+    if memory.get("topic") == "asking_name":
+        words = text.strip().split()
+        if 1 <= len(words) <= 2 and all(w.isalpha() for w in words):
+            memory["name"] = words[0].capitalize()
+            memory["topic"] = None
+            return f"Great to meet you, {memory['name']}! How can I help you today?"
+    return None
+
+
+# ─── BANNER ───────────────────────────────────────────────────────────────────
+
+def print_banner():
+    print(f"\n{Color.CYAN}{Color.BOLD}")
+    print("  ╔══════════════════════════════════════════════════════╗")
+    print("  ║          SUPPORTBOT  —  Customer Support AI          ║")
+    print("  ║      Keyword Rules · Memory · Multi-flow Chat        ║")
+    print("  ╚══════════════════════════════════════════════════════╝")
+    print(f"{Color.RESET}")
+    info("Type 'help' for options.  Type 'bye' to exit.")
+    divider()
+
+
+# ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+
+def run():
+    print_banner()
+    time.sleep(0.3)
+
+    # Opening message
+    bot("Hello! 👋 Welcome to SupportBot. I'm here to help.")
+    bot("May I know your name?")
+    memory["asked_name"] = True
+    memory["topic"] = "asking_name"
+
+    while True:
+        try:
+            text = user_prompt()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            bot(_name_sub(random.choice(FAREWELLS)))
+            break
+
+        if not text:
+            bot("Please type something — I'm listening! 👂")
+            continue
+
+        memory["turn"] += 1
+
+        # ── Special: capture name directly after asking ──
+        name_reply = check_name_capture(text)
+        if name_reply:
+            bot(name_reply)
+            memory["history"].append((text, name_reply))
+            divider()
+            continue
+
+        # ── Match rule ───────────────────────────────────
+        handler = match_rule(text)
+        response = handler(text)
+
+        # ── Check for exit ───────────────────────────────
+        is_exit = handler is handle_farewell
+
+        bot(response)
+        memory["history"].append((text, response))
+        divider()
+
+        if is_exit:
+            break
+
+    print()
+    info(f"Session ended after {memory['turn']} turn(s). Goodbye!")
+    print()
+
+
+# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Disable colors on Windows if ANSI not supported
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleMode(
+                ctypes.windll.kernel32.GetStdHandle(-11), 7
+            )
+        except Exception:
+            pass
+    run()
